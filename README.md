@@ -8,6 +8,19 @@
 
 Так как репозиторий приватный, OpenWrt-роутеру нужен GitHub token с правом чтения этого репозитория. Токен не нужно сохранять в репозитории.
 
+## Где взять GitHub token
+
+1. Откройте GitHub: **Settings -> Developer settings -> Personal access tokens -> Fine-grained tokens**.
+2. Нажмите **Generate new token**.
+3. Название: `openwrt-proton2025-read`.
+4. Expiration: лучше `30` или `90` дней.
+5. Resource owner: `moz9`.
+6. Repository access: **Only select repositories** -> `proton2025-theme-installer`.
+7. Repository permissions: **Contents** -> **Read-only**.
+8. Нажмите **Generate token** и скопируйте токен. GitHub покажет его только один раз.
+
+Реальный токен нельзя коммитить в репозиторий. В командах ниже замените `PASTE_TOKEN_HERE` на токен только у себя в SSH-сессии роутера.
+
 Вариант через `curl`:
 
 ```sh
