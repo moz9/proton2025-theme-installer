@@ -1,0 +1,38 @@
+# Local/editor state
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Logs, downloads, and release bundles
+*.log
+*.tmp
+*.temp
+*.bak
+*.apk
+*.ipk
+*.tar.gz
+*.zip
+*.7z
+*.rar
+dist/
+build/
+release/
+out/
+
+# Secrets and local credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+cred_*
+credentials*
+secrets*
+token*
+*.kdbx
