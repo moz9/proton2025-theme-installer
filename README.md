@@ -1,56 +1,71 @@
 # Proton2025 Theme Installer for OpenWrt
 
-Установщик темы LuCI Proton2025 для OpenWrt.
+Минимальный bootstrap оригинального `ChesterGoodiny/luci-theme-proton2025`.
+Собственного форка темы здесь нет. Для обновления уже установленной темы
+используйте транзакционный путь RouterDesk: standalone-скрипт отказывается
+перезаписывать установленный пакет или обнаруженные файлы темы.
 
-Скрипты не содержат паролей, ключей, Network ID или настроек роутера. Каждый запуск установки берет последнюю версию из GitHub Releases проекта `ChesterGoodiny/luci-theme-proton2025`.
+## Первая установка
 
-## Установка
-
-Запустите на OpenWrt-роутере от `root`:
-
-```sh
-wget -qO- https://raw.githubusercontent.com/moz9/proton2025-theme-installer/main/install-proton2025-theme.sh | sh
-```
-
-Если на прошивке нет `wget`, но есть `curl`:
+Скачайте и просмотрите скрипт, затем запустите от root на OpenWrt:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/moz9/proton2025-theme-installer/main/install-proton2025-theme.sh | sh
+curl -fsSL https://raw.githubusercontent.com/moz9/proton2025-theme-installer/main/install-proton2025-theme.sh -o /tmp/install-proton2025-theme.sh
+PROTON2025_VERSION=v1.4.4 sh /tmp/install-proton2025-theme.sh
 ```
 
-Скрипт каждый раз берет последний релиз из `ChesterGoodiny/luci-theme-proton2025`.
+Версию задавайте явно: скрипт не использует плавающий `latest`.
+Требуются `jsonfilter` (обычно есть на OpenWrt) или `jq`, `sha256sum`,
+`uci`, HTTPS downloader и `apk`/`opkg`.
+Пакет выбирается по точному имени, тегу и upstream GitHub URL;
+дубликаты отклоняются. Перед установкой обязателен SHA-256 digest
+из GitHub Release API. Это проверка целостности по metadata GitHub,
+не независимая подпись автора. Для APK ожидается revision `r1`;
+иной формат имени намеренно требует пересмотра установщика.
+Несохранённые изменения UCI, уже установленный пакет и оставшиеся
+файлы темы/RPC блокируют bootstrap до изменения роутера.
 
-Скрипт сам выбирает пакет:
-
-- `.apk` для OpenWrt с `apk`;
-- `_all.ipk` для OpenWrt с `opkg`.
-
-После установки тема сразу включается через UCI:
+По умолчанию выбранная тема сохраняется: конфигурация LuCI копируется
+перед пакетной операцией и восстанавливается после неё, в том числе
+при обнаруженной ошибке. Чтобы явно включить Proton2025 при первой установке:
 
 ```sh
-uci set luci.main.mediaurlbase='/luci-static/proton2025'
-uci commit luci
+PROTON2025_VERSION=v1.4.4 PROTON2025_ACTIVATE=1 sh /tmp/install-proton2025-theme.sh
 ```
+
+## Границы безопасности
+
+Bootstrap не является атомарной транзакцией и не откатывает пакет или
+все файлы при частичной ошибке пакетного менеджера, отключении питания
+или SIGKILL. Восстановление LuCI config — ограниченная страховка, не
+доказательство работоспособности LuCI. Ошибки restart не скрываются.
+Перед установкой нужен резервный backup и независимый SSH-доступ.
+Для безопасных обновлений с резервированием/проверкой используйте RouterDesk.
+
+Установщик больше не создаёт `proton2025-download` и не патчит upstream
+RPC updater через awk. На уже установленных роутерах прежний helper
+и patch автоматически не удаляются. Встроенный updater самой темы
+не становится транзакционным и этим проектом не проверен: для обновлений
+используйте RouterDesk.
 
 ## Удаление
 
-Запустите на OpenWrt-роутере:
+`uninstall-proton2025-theme.sh` — legacy removal: он переключает тему
+на bootstrap и удаляет пакет. Автоматического отката удаления нет.
+Не запускайте его как восстановление после неудачного обновления.
+
+## Локальная проверка
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/moz9/proton2025-theme-installer/main/uninstall-proton2025-theme.sh | sh
+python -m unittest discover -s tests -v
 ```
 
-Если на прошивке нет `wget`, но есть `curl`:
+Тесты используют Git Bash на Windows или Bash на Linux (путь можно задать
+переменной `BASH`). Проверяются helpers и полный bootstrap с изолированной
+файловой системой и имитацией пакетного менеджера: первый запуск, явная
+активация, отказ повторной установки, ошибки SHA-256/установки/restart,
+сохранение конфигурации и отказ при несохранённых изменениях UCI.
+Asset selection использует адаптер JSON в тесте; native jsonfilter/jq
+и работа LuCI требуют отдельной проверки на OpenWrt.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/moz9/proton2025-theme-installer/main/uninstall-proton2025-theme.sh | sh
-```
-
-Удаление делает две вещи:
-
-- переключает LuCI на стандартную тему `/luci-static/bootstrap`;
-- удаляет пакет `luci-theme-proton2025` через `apk del` или `opkg remove`.
-
-## Источник темы
-
-[ChesterGoodiny/luci-theme-proton2025](https://github.com/ChesterGoodiny/luci-theme-proton2025)
+[Оригинальная тема](https://github.com/ChesterGoodiny/luci-theme-proton2025)

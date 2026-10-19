@@ -5,6 +5,7 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+__pycache__/
 
 # Logs, downloads, and release bundles
 *.log

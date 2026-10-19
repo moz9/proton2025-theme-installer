@@ -1,228 +1,144 @@
 #!/bin/sh
 set -eu
 
-REPO="${PROTON2025_REPO:-ChesterGoodiny/luci-theme-proton2025}"
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
-TMP_DIR="$(mktemp -d /tmp/proton2025.XXXXXX)"
-RELEASE_ASSET_IPS="${PROTON2025_RELEASE_ASSET_IPS:-185.199.108.133 185.199.109.133 185.199.111.133 185.199.110.133}"
+# Bootstrap only: use RouterDesk for transactional upgrades.
+REPO=ChesterGoodiny/luci-theme-proton2025
+fail() { echo "$*" >&2; return 1; }
 
-cleanup() {
-	rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT INT TERM
-
-need_root() {
-	if [ "$(id -u)" != 0 ]; then
-		echo "Запустите скрипт от root на OpenWrt." >&2
-		exit 1
-	fi
-}
-
-need_openwrt() {
-	if [ ! -f /etc/openwrt_release ]; then
-		echo "Это не похоже на OpenWrt: нет /etc/openwrt_release." >&2
-		exit 1
-	fi
-}
-
-download_once() {
-	url="$1"
-	dest="$2"
-	resolve_ip="${3:-}"
-
-	if command -v curl >/dev/null 2>&1; then
-		if [ -n "$resolve_ip" ]; then
-			curl -fsSL --connect-timeout 10 -m 120 \
-				-H 'User-Agent: openwrt-proton2025-installer' \
-				--resolve "release-assets.githubusercontent.com:443:${resolve_ip}" \
-				"$url" -o "$dest"
-		else
-			curl -fsSL --connect-timeout 10 -m 120 \
-				-H 'User-Agent: openwrt-proton2025-installer' \
-				"$url" -o "$dest"
-		fi
-	elif command -v wget >/dev/null 2>&1; then
-		wget -q -O "$dest" "$url"
-	elif command -v uclient-fetch >/dev/null 2>&1; then
-		uclient-fetch -q -O "$dest" "$url"
-	else
-		echo "Не найдена команда для скачивания: нужен wget, curl или uclient-fetch." >&2
-		exit 1
-	fi
+validate_version() {
+	case "${PROTON2025_VERSION:-}" in
+		*[!v0-9.]*) fail 'Некорректный PROTON2025_VERSION.'; return 1 ;;
+	esac
+	printf '%s\n' "${PROTON2025_VERSION:-}" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || {
+		fail 'Задайте PROTON2025_VERSION в формате v1.4.4.'; return 1
+	}
 }
 
 download() {
-	url="$1"
-	dest="$2"
-
-	rm -f "$dest"
-	if download_once "$url" "$dest" && [ -s "$dest" ]; then
-		return 0
-	fi
-
-	case "$url" in
-		*github.com*/releases/download/*)
-			if command -v curl >/dev/null 2>&1; then
-				for ip in $RELEASE_ASSET_IPS; do
-					rm -f "$dest"
-					echo "Retry download via release-assets.githubusercontent.com ${ip}..." >&2
-					if download_once "$url" "$dest" "$ip" && [ -s "$dest" ]; then
-						return 0
-					fi
-				done
-			fi
-			;;
-	esac
-
-	return 1
-}
-
-json_value() {
-	key="$1"
-	tr ',' '\n' < "$TMP_DIR/release.json" | sed -n 's/^[[:space:]]*"'$key'":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
-}
-
-asset_url() {
-	pattern="$1"
-	tr ',' '\n' < "$TMP_DIR/release.json" | sed -n 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)".*/\1/p' | grep "$pattern" | head -n 1
-}
-
-install_package() {
-	package_file="$1"
-
-	if command -v apk >/dev/null 2>&1; then
-		apk add --allow-untrusted "$package_file"
-	elif command -v opkg >/dev/null 2>&1; then
-		opkg install "$package_file"
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 10 -m 120 \
+			-H 'User-Agent: openwrt-proton2025-installer' -o "$2" "$1"
+	elif command -v uclient-fetch >/dev/null 2>&1; then
+		uclient-fetch -q -O "$2" "$1"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -O "$2" "$1"
 	else
-		echo "Не найден пакетный менеджер: нужен apk или opkg." >&2
-		exit 1
+		fail 'Нужен curl, uclient-fetch или wget.'
+	fi
+	[ -s "$2" ]
+}
+
+json_get() {
+	if command -v jsonfilter >/dev/null 2>&1; then
+		jsonfilter -i "$1" -e "@$2"
+	else
+		jq -r "$2 // empty" "$1"
 	fi
 }
 
-enable_theme() {
-	if command -v uci >/dev/null 2>&1; then
+select_asset() {
+	metadata="$1"
+	expected="$2"
+	[ "$(json_get "$metadata" .tag_name)" = "$PROTON2025_VERSION" ] || return 1
+	index=0
+	matches=0
+	while name="$(json_get "$metadata" ".assets[$index].name")" && [ -n "$name" ]; do
+		if [ "$name" = "$expected" ]; then
+			matches=$((matches + 1))
+			asset_url="$(json_get "$metadata" ".assets[$index].browser_download_url")" || return 1
+			asset_digest="$(json_get "$metadata" ".assets[$index].digest")" || return 1
+		fi
+		index=$((index + 1))
+	done
+	[ "$matches" = 1 ] || return 1
+	[ "$asset_url" = "https://github.com/$REPO/releases/download/$PROTON2025_VERSION/$expected" ] || return 1
+	printf '%s\n%s\n' "$asset_url" "$asset_digest"
+}
+
+verify_digest() {
+	case "$2" in sha256:*) expected_hash="${2#sha256:}" ;; *) fail 'Нет SHA-256 digest.'; return 1 ;; esac
+	[ "${#expected_hash}" = 64 ] || { fail 'Некорректный SHA-256 digest.'; return 1; }
+	case "$expected_hash" in *[!0-9a-f]*) fail 'Некорректный SHA-256 digest.'; return 1 ;; esac
+	actual_hash="$(sha256sum "$1")" || return 1
+	[ "${actual_hash%% *}" = "$expected_hash" ] || { fail 'SHA-256 пакета не совпадает.'; return 1; }
+}
+
+cleanup() {
+	status=$?
+	trap - EXIT
+	if [ "${restore_luci:-0}" = 1 ]; then
+		cp -p "$TMP_DIR/luci.before" /etc/config/luci || {
+			echo "Не удалось восстановить LuCI config; резервная копия: $TMP_DIR/luci.before" >&2
+			exit 1
+		}
+	fi
+	rm -rf "$TMP_DIR"
+	exit "$status"
+}
+
+main() {
+	validate_version
+	[ "$(id -u)" = 0 ] || { fail 'Запустите от root на OpenWrt.'; return 1; }
+	[ -f /etc/openwrt_release ] || { fail 'Нет /etc/openwrt_release.'; return 1; }
+	command -v sha256sum >/dev/null 2>&1 || { fail 'Нужен sha256sum.'; return 1; }
+	if ! command -v jsonfilter >/dev/null 2>&1 && ! command -v jq >/dev/null 2>&1; then
+		fail 'Нужен jsonfilter или jq для строгого разбора GitHub API.'; return 1
+	fi
+	command -v uci >/dev/null 2>&1 || { fail 'Нужен uci.'; return 1; }
+	pending="$(uci changes)" || { fail 'Не удалось проверить изменения UCI.'; return 1; }
+	[ -z "$pending" ] || { fail 'Есть несохранённые изменения UCI; сначала примените или отмените их.'; return 1; }
+	case "${PROTON2025_ACTIVATE:-0}" in 0|1) ;; *) fail 'PROTON2025_ACTIVATE должен быть 0 или 1.'; return 1 ;; esac
+	version="${PROTON2025_VERSION#v}"
+	if command -v apk >/dev/null 2>&1; then
+		manager=apk
+		if apk info -e luci-theme-proton2025 >/dev/null 2>&1; then
+			fail 'Тема уже установлена. Для безопасного обновления используйте RouterDesk.'; return 1
+		fi
+		asset="luci-theme-proton2025-${version}-r1.apk"
+	elif command -v opkg >/dev/null 2>&1; then
+		manager=opkg
+		if opkg status luci-theme-proton2025 | grep -q '^Status: .* installed$'; then
+			fail 'Тема уже установлена. Для безопасного обновления используйте RouterDesk.'; return 1
+		fi
+		asset="luci-theme-proton2025_${version}_all.ipk"
+	else
+		fail 'Нужен apk или opkg.'; return 1
+	fi
+	for path in /www/luci-static/proton2025 /usr/share/rpcd/ucode/luci.proton-*; do
+		if [ -e "$path" ] || [ -L "$path" ]; then
+			fail 'Обнаружены существующие файлы темы. Используйте RouterDesk.'; return 1
+		fi
+	done
+	TMP_DIR="$(mktemp -d /tmp/proton2025.XXXXXX)"
+	restore_luci=0
+	trap cleanup EXIT
+	trap 'exit 1' INT TERM
+	download "https://api.github.com/repos/$REPO/releases/tags/$PROTON2025_VERSION" "$TMP_DIR/release.json"
+	selection="$(select_asset "$TMP_DIR/release.json" "$asset")" || { fail 'Релиз или точный asset не прошёл проверку.'; return 1; }
+	url="$(printf '%s\n' "$selection" | sed -n '1p')"
+	digest="$(printf '%s\n' "$selection" | sed -n '2p')"
+	download "$url" "$TMP_DIR/$asset"
+	verify_digest "$TMP_DIR/$asset" "$digest"
+	[ -f /etc/config/luci ] || { fail 'Нет /etc/config/luci; bootstrap отменён.'; return 1; }
+	cp -p /etc/config/luci "$TMP_DIR/luci.before"
+	restore_luci=1
+	echo "Установка $PROTON2025_VERSION ($asset)."
+	if [ "$manager" = apk ]; then
+		apk add --allow-untrusted "$TMP_DIR/$asset"
+	else
+		opkg install "$TMP_DIR/$asset"
+	fi
+	cp -p "$TMP_DIR/luci.before" /etc/config/luci
+	if [ "${PROTON2025_ACTIVATE:-0}" = 1 ]; then
 		uci set luci.main.mediaurlbase='/luci-static/proton2025'
 		uci commit luci
 	fi
-
-	/etc/init.d/uhttpd restart 2>/dev/null || true
-	/etc/init.d/rpcd restart 2>/dev/null || true
-	rm -rf /tmp/luci-indexcache /tmp/luci-modulecache 2>/dev/null || true
+	/etc/init.d/rpcd restart
+	/etc/init.d/uhttpd restart
+	restore_luci=0
+	echo 'Пакет установлен. Этот bootstrap не обеспечивает автоматический откат.'
 }
 
-install_download_helper() {
-	cat > /usr/bin/proton2025-download <<'EOF'
-#!/bin/sh
-set -u
-
-dest="$1"
-url="$2"
-ips="${PROTON2025_RELEASE_ASSET_IPS:-185.199.108.133 185.199.109.133 185.199.111.133 185.199.110.133}"
-
-try_download() {
-	try_url="$1"
-	try_dest="$2"
-	resolve_ip="${3:-}"
-
-	rm -f "$try_dest"
-
-	if command -v curl >/dev/null 2>&1; then
-		if [ -n "$resolve_ip" ]; then
-			curl -fsSL --connect-timeout 10 -m 120 \
-				--resolve "release-assets.githubusercontent.com:443:${resolve_ip}" \
-				-o "$try_dest" "$try_url"
-		else
-			curl -fsSL --connect-timeout 10 -m 120 -o "$try_dest" "$try_url"
-		fi
-	elif command -v wget >/dev/null 2>&1; then
-		wget -qO "$try_dest" --timeout=30 "$try_url"
-	else
-		return 1
-	fi
-
-	[ -s "$try_dest" ]
-}
-
-try_download "$url" "$dest" && exit 0
-
-case "$url" in
-	*github.com*/releases/download/*)
-		if command -v curl >/dev/null 2>&1; then
-			for ip in $ips; do
-				try_download "$url" "$dest" "$ip" && exit 0
-			done
-		fi
-		;;
-esac
-
-exit 1
-EOF
-	chmod 0755 /usr/bin/proton2025-download
-}
-
-patch_theme_updater() {
-	settings_file="/usr/share/rpcd/ucode/luci.proton-settings"
-
-	[ -f "$settings_file" ] || return 0
-	install_download_helper
-
-	if grep -q "proton2025-release-assets-fallback" "$settings_file"; then
-		return 0
-	fi
-
-	tmp_file="${settings_file}.tmp.$$"
-	awk '
-		/const downloadResult = runCommand\("rm -f / {
-			print "        /* proton2025-release-assets-fallback */";
-			print "        const downloadResult = runCommand(\"proton2025-download \" + packagePath + \" \" + assetUrl + \" >/tmp/proton2025-download.log 2>&1 && echo ok || echo fail\");";
-			next;
-		}
-		{ print }
-	' "$settings_file" > "$tmp_file" && mv "$tmp_file" "$settings_file"
-	rm -f "$tmp_file"
-	/etc/init.d/rpcd restart 2>/dev/null || true
-}
-
-need_root
-need_openwrt
-
-echo "== Proton2025: поиск последнего релиза =="
-download "$API_URL" "$TMP_DIR/release.json"
-
-tag="$(json_value tag_name)"
-if [ -z "$tag" ]; then
-	echo "Не удалось определить последнюю версию Proton2025." >&2
-	exit 1
+if [ "${PROTON2025_LIBRARY_ONLY:-0}" != 1 ]; then
+	main "$@"
 fi
-
-if command -v apk >/dev/null 2>&1; then
-	url="$(asset_url '\.apk$')"
-elif command -v opkg >/dev/null 2>&1; then
-	url="$(asset_url '_all\.ipk$')"
-else
-	echo "Не найден пакетный менеджер: нужен apk или opkg." >&2
-	exit 1
-fi
-
-if [ -z "$url" ]; then
-	echo "В релизе ${tag} не найден подходящий пакет для этого роутера." >&2
-	exit 1
-fi
-
-package_file="${TMP_DIR}/$(basename "$url")"
-
-echo "Версия: ${tag}"
-echo "Пакет: $(basename "$package_file")"
-download "$url" "$package_file"
-
-echo "== Установка пакета =="
-install_package "$package_file"
-
-echo "== Включение темы =="
-enable_theme
-patch_theme_updater
-
-echo
-echo "Готово. Тема Proton2025 установлена и включена."
-echo "Если браузер показывает старую тему, сделайте жесткое обновление страницы."

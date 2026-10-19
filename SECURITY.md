@@ -6,7 +6,7 @@ This repository contains installer scripts intended to run on OpenWrt routers.
 
 The default branch contains the current supported installer. When sharing install commands with other people, prefer a tagged release or a pinned commit URL instead of a moving `main` URL.
 
-The installer downloads the latest release from the upstream Proton2025 theme repository. For a repeatable deployment, pin the upstream package version or keep a verified package copy in a controlled release process.
+The bootstrap requires an explicit upstream release version and verifies the exact asset URL and SHA-256 digest from GitHub Release metadata. It refuses to upgrade an existing installation. Use RouterDesk for transactional updates and rollback; the bootstrap does not provide package rollback after a partial failure.
 
 ## Secrets and private data
 
