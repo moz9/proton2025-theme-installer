@@ -84,6 +84,27 @@ add|install) echo install >> "$TEST_ROOT/pm-calls"
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('PROTON2025_VERSION', result.stderr)
 
+    def test_existing_theme_uses_transactional_upgrade(self):
+        result = self.run_shell('PROTON2025_LIBRARY_ONLY=1 . ./install-proton2025-theme.sh; '
+                                'command -v update_existing')
+        self.assertEqual(result.returncode, 0, 'existing installations still have no upgrade route')
+
+    def test_backend_pins_and_routerdesk_copy_match(self):
+        code = (ROOT / 'install-proton2025-theme.sh').read_text(encoding='utf-8')
+        for backend in ('proton-transaction.sh', 'proton-dependencies.sh', 'proton-luci-health.sh'):
+            data = (ROOT / 'lib' / backend).read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+            self.assertIn(f'{backend}) backend_hash={digest};;', code)
+            rd = ROOT.parent / 'RouterDesk/RouterDesk.Core/Scripts' / backend
+            if rd.exists():
+                self.assertEqual(rd.read_text(encoding='utf-8'), data.decode('utf-8'), backend)
+
+    def test_same_version_is_noop_and_downgrade_is_refused(self):
+        for installed, expected in [('1.4.4', 0), ('1.4.5', 1)]:
+            result = self.run_shell('PROTON2025_LIBRARY_ONLY=1 . ./install-proton2025-theme.sh; '
+                                    f'PROTON2025_VERSION=v1.4.4; update_existing {installed}')
+            self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_invalid_version_rejected(self):
         result = self.run_shell("PROTON2025_VERSION='v1; touch /tmp/injected' sh install-proton2025-theme.sh")
         self.assertNotEqual(result.returncode, 0)
